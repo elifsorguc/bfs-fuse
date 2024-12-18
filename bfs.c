@@ -105,17 +105,20 @@ static int bfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     return -ENOSPC;
 }
 
-// Delete a file
 static int bfs_unlink(const char *path)
 {
     int idx = find_file(path + 1);
     if (idx != -1)
     {
-        directory[idx].inode_num = 0;
-        memset(&inodes[directory[idx].inode_num - 1], 0, sizeof(Inode));
-        return 0;
+        int inode_num = directory[idx].inode_num;
+        if (inode_num > 0)
+        { // Ensure the inode number is valid
+            memset(&inodes[inode_num - 1], 0, sizeof(Inode));
+            directory[idx].inode_num = 0; // Mark directory entry as unused
+            return 0;
+        }
     }
-    return -ENOENT;
+    return -ENOENT; // File not found
 }
 
 // Rename a file
