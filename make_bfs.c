@@ -1,11 +1,3 @@
-/*
-    This initializes (i.e., formats) the disk with the BFS file system.
-    The on-disk data structures (superblock, bitmap, inode map, inode table, root directory)
-    will be created and initialized on the disk. Initially, there will be no file on the
-    disk. Therefore, when we type `ls` in the root directory of the BFS file system,
-    only two entries should be listed: "." and "..".
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,131 +13,98 @@
 #define MAX_FILES 128
 #define FILENAME_LEN 48
 
-// Superblock Structure
-typedef struct
-{
-    int total_blocks;
-    int block_size;
-    int inode_count;
-    int root_dir_block;
+// Superblock structure
+typedef struct {
+    int total_blocks;         // Total number of blocks
+    int block_size;           // Block size in bytes
+    int inode_count;          // Total number of inodes
+    int root_dir_block;       // Start block of the root directory
 } Superblock;
 
-// Directory Entry Structure
-typedef struct
-{
-    char name[FILENAME_LEN];
-    int inode_num;
+// Directory Entry structure
+typedef struct {
+    char name[FILENAME_LEN];  // File name
+    int inode_num;            // Inode number
 } DirectoryEntry;
 
-// Function Prototypes
-int read_block(int fd_disk, void *block, int k);
-int write_block(int fd_disk, void *block, int k);
-
-// Reads a block from the disk
-int read_block(int fd_disk, void *block, int k)
-{
-    int offset = k * BLOCK_SIZE;
-    lseek(fd_disk, offset, SEEK_SET);
-    int n = read(fd_disk, block, BLOCK_SIZE);
-    if (n != BLOCK_SIZE)
-    {
-        printf("Read error at block %d\n", k);
+// Utility Functions
+int write_block(int fd, void *data, int block_num) {
+    lseek(fd, block_num * BLOCK_SIZE, SEEK_SET);
+    ssize_t bytes_written = write(fd, data, BLOCK_SIZE);
+    if (bytes_written != BLOCK_SIZE) {
+        perror("Write failed");
         return -1;
     }
     return 0;
 }
 
-// Writes a block to the disk
-int write_block(int fd_disk, void *block, int k)
-{
-    int offset = k * BLOCK_SIZE;
-    lseek(fd_disk, offset, SEEK_SET);
-    int n = write(fd_disk, block, BLOCK_SIZE);
-    if (n != BLOCK_SIZE)
-    {
-        printf("Write error at block %d\n", k);
-        return -1;
-    }
-    return 0;
-}
-
-int main()
-{
+int main() {
     int fd = open("disk1", O_CREAT | O_RDWR, 0666);
-    if (fd < 0)
-    {
-        perror("Failed to open disk file");
+    if (fd < 0) {
+        perror("Failed to create disk file");
         return 1;
     }
 
     char buffer[BLOCK_SIZE] = {0};
 
-    // Superblock Initialization
+    // 1. Initialize the Superblock
     Superblock sb = {TOTAL_BLOCKS, BLOCK_SIZE, MAX_FILES, BITMAP_BLOCKS + INODE_MAP_BLOCK + 1};
     memcpy(buffer, &sb, sizeof(Superblock));
-    if (write_block(fd, buffer, 0) != 0)
-    {
-        printf("Error initializing superblock\n");
+    if (write_block(fd, buffer, 0) != 0) {
         close(fd);
         return 1;
     }
+    printf("Superblock initialized.\n");
 
-    // Bitmap Initialization (blocks 1-2)
-    memset(buffer, 0xFF, BLOCK_SIZE); // Mark system blocks as used
-    buffer[0] = 0x03;                 // Mark superblock and bitmap blocks as used
-    if (write_block(fd, buffer, 1) != 0 || write_block(fd, buffer, 2) != 0)
-    {
-        printf("Error initializing bitmap\n");
+    // 2. Initialize the Bitmap
+    memset(buffer, 0xFF, BLOCK_SIZE); // Mark all system blocks as used
+    buffer[0] = 0x03; // First three blocks (superblock + bitmap blocks) are used
+    if (write_block(fd, buffer, 1) != 0 || write_block(fd, buffer, 2) != 0) {
         close(fd);
         return 1;
     }
+    printf("Bitmap initialized.\n");
 
-    // Inode Map Initialization
+    // 3. Initialize the Inode Map
     memset(buffer, 0, BLOCK_SIZE);
-    buffer[0] = 1; // Mark root directory inode as used
-    if (write_block(fd, buffer, 3) != 0)
-    {
-        printf("Error initializing inode map\n");
+    buffer[0] = 1; // Mark the root directory inode as used
+    if (write_block(fd, buffer, 3) != 0) {
         close(fd);
         return 1;
     }
+    printf("Inode map initialized.\n");
 
-    // Inode Table Initialization (blocks 4-11)
-    for (int i = 4; i < INODE_TABLE_BLOCKS + 4; i++)
-    {
+    // 4. Initialize the Inode Table
+    for (int i = 4; i < 4 + INODE_TABLE_BLOCKS; i++) {
         memset(buffer, 0, BLOCK_SIZE);
-        if (write_block(fd, buffer, i) != 0)
-        {
-            printf("Error initializing inode table\n");
+        if (write_block(fd, buffer, i) != 0) {
             close(fd);
             return 1;
         }
     }
+    printf("Inode table initialized.\n");
 
-    // Root Directory Initialization
-    DirectoryEntry root_dir[2] = {{".", 1}, {"..", 1}};
+    // 5. Initialize the Root Directory
+    DirectoryEntry root_dir[2] = { {".", 1}, {"..", 1} };
     memset(buffer, 0, BLOCK_SIZE);
     memcpy(buffer, root_dir, sizeof(root_dir));
-    if (write_block(fd, buffer, BITMAP_BLOCKS + INODE_MAP_BLOCK + 1) != 0)
-    {
-        printf("Error initializing root directory\n");
+    if (write_block(fd, buffer, sb.root_dir_block) != 0) {
         close(fd);
         return 1;
     }
+    printf("Root directory initialized.\n");
 
-    // Zero out all remaining blocks (free data blocks)
+    // 6. Clear all remaining blocks
     memset(buffer, 0, BLOCK_SIZE);
-    for (int i = BITMAP_BLOCKS + INODE_MAP_BLOCK + ROOT_DIR_BLOCKS + 1; i < TOTAL_BLOCKS; i++)
-    {
-        if (write_block(fd, buffer, i) != 0)
-        {
-            printf("Error clearing block %d\n", i);
+    for (int i = sb.root_dir_block + ROOT_DIR_BLOCKS; i < TOTAL_BLOCKS; i++) {
+        if (write_block(fd, buffer, i) != 0) {
             close(fd);
             return 1;
         }
     }
+    printf("Disk blocks cleared.\n");
 
-    printf("Disk Initialized Successfully.\n");
+    printf("Disk initialized successfully.\n");
     close(fd);
     return 0;
 }
