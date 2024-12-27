@@ -46,6 +46,7 @@ int fd_disk;                         // Disk file descriptor
 char bitmap[BLOCK_SIZE];             // Bitmap to manage free/used blocks
 Inode inodes[MAX_FILES];             // Array of inodes
 DirectoryEntry directory[MAX_FILES]; // Array of directory entries
+char inode_bitmap[MAX_FILES / 8] = {0};
 
 /* Helper Functions */
 int find_file(const char *name);
@@ -57,6 +58,8 @@ void release_block(int block_num);
 void initialize_filesystem();
 void save_metadata();
 int write_partial_block(int block_num, const void *buf, size_t size);
+int find_free_inode();
+void release_inode(int inode_num);
 
 /* FUSE Operations */
 int bfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi);
@@ -133,6 +136,27 @@ void initialize_inodes_and_directory()
     }
 
     fprintf(stderr, "INITIALIZE: Metadata loaded successfully.\n");
+}
+
+int find_free_inode()
+{
+    for (int i = 0; i < MAX_FILES; i++)
+    {
+        int byte_idx = i / 8;
+        int bit_idx = i % 8;
+        if (!(inode_bitmap[byte_idx] & (1 << bit_idx)))
+        {
+            inode_bitmap[byte_idx] |= (1 << bit_idx);
+            return i; // Free inode found
+        }
+    }
+    return -1; // No free inode found
+}
+void release_inode(int inode_num)
+{
+    int byte_idx = inode_num / 8;
+    int bit_idx = inode_num % 8;
+    inode_bitmap[byte_idx] &= ~(1 << bit_idx);
 }
 
 int bfs_rename(const char *oldpath, const char *newpath)
@@ -265,73 +289,63 @@ void initialize_filesystem()
     }
 }
 
-void save_metadata()
-{
-    fprintf(stderr, "SAVE METADATA: Saving bitmap...\n");
-    if (write_partial_block(BITMAP_BLOCK, bitmap, sizeof(bitmap)) != 0)
-    {
-        fprintf(stderr, "SAVE METADATA ERROR: Failed to save bitmap.\n");
+void save_metadata() {
+    fprintf(stderr, "SAVE METADATA: Saving inode bitmap...\n");
+    if (write_partial_block(BITMAP_BLOCK, inode_bitmap, sizeof(inode_bitmap)) != 0) {
+        fprintf(stderr, "SAVE METADATA ERROR: Failed to save inode bitmap.\n");
     }
 
-    fprintf(stderr, "SAVE METADATA: Saving directory...\n");
-    if (write_block(ROOT_DIR_BLOCK, directory) != 0)
-    {
+    fprintf(stderr, "SAVE METADATA: Saving block bitmap...\n");
+    if (write_partial_block(BITMAP_BLOCK + 1, bitmap, BLOCK_SIZE) != 0) {
+        fprintf(stderr, "SAVE METADATA ERROR: Failed to save block bitmap.\n");
+    }
+
+    fprintf(stderr, "SAVE METADATA: Saving directory and inode table...\n");
+    if (write_block(ROOT_DIR_BLOCK, directory) != 0) {
         fprintf(stderr, "SAVE METADATA ERROR: Failed to save directory.\n");
     }
 
-    fprintf(stderr, "SAVE METADATA: Saving inode table...\n");
-    for (int i = 0; i < MAX_FILES; i++)
-    {
-        if (write_block(INODE_TABLE_START + i, &inodes[i]) != 0)
-        {
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (write_block(INODE_TABLE_START + i, &inodes[i]) != 0) {
             fprintf(stderr, "SAVE METADATA ERROR: Failed to save inode %d.\n", i);
         }
     }
-
     fprintf(stderr, "SAVE METADATA: Metadata saved successfully.\n");
 }
 
+
 /* FUSE Callbacks */
-int bfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
-{
+int bfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
     fprintf(stderr, "GETATTR: path=%s\n", path);
 
     memset(stbuf, 0, sizeof(struct stat));
-    if (strcmp(path, "/") == 0)
-    {
+    if (strcmp(path, "/") == 0) {
         stbuf->st_mode = S_IFDIR | 0755; // Root directory
         stbuf->st_nlink = 2;
         fprintf(stderr, "GETATTR: Root directory found\n");
         return 0;
     }
 
-    for (int i = 0; i < MAX_FILES; i++)
-    {
-        if (directory[i].inode_num > 0 && strcmp(directory[i].name, path + 1) == 0)
-        {
-            int inode_idx = directory[i].inode_num - 1; // Convert 1-based index to 0-based
-            if (inode_idx < 0 || inode_idx >= MAX_FILES)
-            {
-                fprintf(stderr, "GETATTR ERROR: Invalid inode index=%d for file=%s\n", inode_idx, path);
-                return -EIO;
-            }
-
-            Inode *inode = &inodes[inode_idx];
-            stbuf->st_mode = S_IFREG | inode->permissions;
-            stbuf->st_nlink = inode->ref_count;
-            stbuf->st_size = inode->size;
-            stbuf->st_atime = inode->creation_time;
-            stbuf->st_mtime = inode->modification_time;
-            stbuf->st_ctime = inode->modification_time;
-
-            fprintf(stderr, "GETATTR: File=%s found, inode=%d\n", path, inode_idx);
-            return 0;
-        }
+    int file_idx = find_file(path + 1); // Remove leading '/'
+    if (file_idx == -1) {
+        fprintf(stderr, "GETATTR ERROR: File not found: %s\n", path);
+        return -ENOENT;
     }
 
-    fprintf(stderr, "GETATTR ERROR: File not found: %s\n", path);
-    return -ENOENT;
+    DirectoryEntry *entry = &directory[file_idx];
+    Inode *inode = &inodes[entry->inode_num - 1];
+
+    stbuf->st_mode = S_IFREG | inode->permissions;
+    stbuf->st_nlink = inode->ref_count;
+    stbuf->st_size = inode->size;
+    stbuf->st_atime = inode->creation_time;
+    stbuf->st_mtime = inode->modification_time;
+    stbuf->st_ctime = inode->modification_time;
+
+    fprintf(stderr, "GETATTR: File=%s found, inode=%d\n", path, entry->inode_num);
+    return 0;
 }
+
 
 int bfs_open(const char *path, struct fuse_file_info *fi)
 {
@@ -400,23 +414,22 @@ int bfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
         if (directory[i].inode_num == 0)
         {
             // Check for duplicate name
-            for (int j = 0; j < MAX_FILES; j++)
+            if (find_file(path + 1) != -1)
             {
-                if (strcmp(directory[j].name, path + 1) == 0)
-                {
-                    fprintf(stderr, "CREATE ERROR: File=%s already exists\n", path);
-                    return -EEXIST;
-                }
+                fprintf(stderr, "CREATE ERROR: File=%s already exists\n", path);
+                return -EEXIST;
             }
 
-            strncpy(directory[i].name, path + 1, FILENAME_LEN);
-            int inode_idx = find_free_block();
+            // Assign a free inode
+            int inode_idx = find_free_inode();
             if (inode_idx == -1)
             {
                 fprintf(stderr, "CREATE ERROR: No free inodes available\n");
                 return -ENOSPC;
             }
-            directory[i].inode_num = inode_idx;
+
+            strncpy(directory[i].name, path + 1, FILENAME_LEN);
+            directory[i].inode_num = inode_idx + 1; // 1-based indexing
 
             Inode *inode = &inodes[inode_idx];
             memset(inode, 0, sizeof(Inode));
@@ -434,6 +447,7 @@ int bfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     return -ENOSPC;
 }
 
+
 int bfs_unlink(const char *path)
 {
     fprintf(stderr, "UNLINK: Attempting to delete file at path=%s\n", path);
@@ -442,60 +456,21 @@ int bfs_unlink(const char *path)
     {
         if (strcmp(directory[i].name, path + 1) == 0)
         {
-            int inode_num = directory[i].inode_num - 1; // Adjust to 0-based index
-            if (inode_num < 0 || inode_num >= MAX_FILES)
-            {
-                fprintf(stderr, "UNLINK ERROR: Invalid inode number=%d\n", directory[i].inode_num);
-                return -EINVAL;
-            }
+            int inode_num = directory[i].inode_num - 1; // Convert to 0-based index
+            release_inode(inode_num);
 
             Inode *inode = &inodes[inode_num];
-            fprintf(stderr, "UNLINK: Found file=%s, inode_num=%d\n", directory[i].name, directory[i].inode_num);
-
-            // Release direct blocks
             for (int j = 0; j < DIRECT_BLOCKS; j++)
             {
                 if (inode->block_pointers[j] != 0)
                 {
-                    fprintf(stderr, "UNLINK: Releasing block=%d\n", inode->block_pointers[j]);
                     release_block(inode->block_pointers[j]);
-                    inode->block_pointers[j] = 0;
                 }
             }
 
-            // Release indirect blocks if allocated
-            if (inode->indirect_pointer != 0)
-            {
-                char indirect_block[BLOCK_SIZE];
-                if (read_block(inode->indirect_pointer, indirect_block) != 0)
-                {
-                    fprintf(stderr, "UNLINK ERROR: Failed to read indirect block=%d\n", inode->indirect_pointer);
-                    return -EIO;
-                }
-
-                int *indirect_pointers = (int *)indirect_block;
-                for (int j = 0; j < BLOCK_SIZE / sizeof(int); j++)
-                {
-                    if (indirect_pointers[j] != 0)
-                    {
-                        fprintf(stderr, "UNLINK: Releasing indirect block=%d\n", indirect_pointers[j]);
-                        release_block(indirect_pointers[j]);
-                    }
-                }
-
-                fprintf(stderr, "UNLINK: Releasing indirect block pointer=%d\n", inode->indirect_pointer);
-                release_block(inode->indirect_pointer);
-                inode->indirect_pointer = 0;
-            }
-
-            // Clear directory entry and inode
-            fprintf(stderr, "UNLINK: Clearing directory entry for file=%s\n", directory[i].name);
             memset(&directory[i], 0, sizeof(DirectoryEntry));
-
-            fprintf(stderr, "UNLINK: Clearing inode=%d\n", inode_num + 1);
             memset(inode, 0, sizeof(Inode));
 
-            // Save metadata
             save_metadata();
             fprintf(stderr, "UNLINK: File=%s successfully unlinked\n", path);
             return 0;
@@ -506,127 +481,128 @@ int bfs_unlink(const char *path)
     return -ENOENT;
 }
 
-int bfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
-{
+
+int bfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     fprintf(stderr, "READ: path=%s, size=%zu, offset=%ld\n", path, size, offset);
 
     int file_idx = find_file(path + 1);
-    if (file_idx == -1)
-    {
+    if (file_idx == -1) {
         fprintf(stderr, "READ ERROR: File not found: %s\n", path);
         return -ENOENT;
     }
 
     Inode *inode = &inodes[directory[file_idx].inode_num - 1];
-    if (offset >= inode->size)
-    {
+    if (offset >= inode->size) {
         fprintf(stderr, "READ: Offset beyond EOF for file=%s\n", path);
-        return 0;
+        return 0; // EOF
     }
 
     size_t bytes_read = 0;
-    size_t block_idx = offset / BLOCK_SIZE;
-    size_t block_offset = offset % BLOCK_SIZE;
+    while (bytes_read < size && offset + bytes_read < inode->size) {
+        size_t block_idx = (offset + bytes_read) / BLOCK_SIZE;
+        size_t block_offset = (offset + bytes_read) % BLOCK_SIZE;
 
-    while (bytes_read < size && block_idx < DIRECT_BLOCKS)
-    {
-        if (inode->block_pointers[block_idx] == 0)
-        {
-            fprintf(stderr, "READ ERROR: Unallocated block at index %zu for file=%s\n", block_idx, path);
+        if (block_idx >= DIRECT_BLOCKS) {
+            fprintf(stderr, "READ ERROR: Indirect blocks not implemented for file=%s\n", path);
             return -EIO;
         }
 
-        char block[BLOCK_SIZE];
-        if (read_block(inode->block_pointers[block_idx], block) != 0)
-        {
-            fprintf(stderr, "READ ERROR: Failed to read block %d for file=%s\n", inode->block_pointers[block_idx], path);
+        char block[BLOCK_SIZE] = {0};
+
+        if (inode->block_pointers[block_idx] == 0) {
+            fprintf(stderr, "READ ERROR: Unallocated block %zu for file=%s\n", block_idx, path);
+            break;
+        }
+
+        if (read_block(inode->block_pointers[block_idx], block) != 0) {
+            fprintf(stderr, "READ ERROR: Failed to read block %zu for file=%s\n", block_idx, path);
             return -EIO;
         }
 
         size_t bytes_to_copy = BLOCK_SIZE - block_offset;
-        if (bytes_to_copy > size - bytes_read)
-        {
+        if (bytes_to_copy > size - bytes_read) {
             bytes_to_copy = size - bytes_read;
+        }
+        if (bytes_to_copy > inode->size - offset - bytes_read) {
+            bytes_to_copy = inode->size - offset - bytes_read;
         }
 
         memcpy(buf + bytes_read, block + block_offset, bytes_to_copy);
         bytes_read += bytes_to_copy;
-
-        block_idx++;
-        block_offset = 0;
     }
 
     fprintf(stderr, "READ: Successfully read %zu bytes from file=%s\n", bytes_read, path);
     return bytes_read;
 }
 
-int bfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
-{
+
+int bfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     fprintf(stderr, "WRITE: path=%s, size=%zu, offset=%ld\n", path, size, offset);
 
     int file_idx = find_file(path + 1);
-    if (file_idx == -1)
-    {
+    if (file_idx == -1) {
         fprintf(stderr, "WRITE ERROR: File not found: %s\n", path);
         return -ENOENT;
     }
 
     Inode *inode = &inodes[directory[file_idx].inode_num - 1];
-    if (offset + size > MAX_FILE_SIZE)
-    {
-        fprintf(stderr, "WRITE ERROR: File size exceeds maximum allowed size for file=%s\n", path);
+    if (offset + size > MAX_FILE_SIZE) {
+        fprintf(stderr, "WRITE ERROR: File size exceeds maximum for file=%s\n", path);
         return -EFBIG;
     }
 
     size_t bytes_written = 0;
-    while (bytes_written < size)
-    {
-        size_t block_idx = offset / BLOCK_SIZE;
-        size_t block_offset = offset % BLOCK_SIZE;
+    while (bytes_written < size) {
+        size_t block_idx = (offset + bytes_written) / BLOCK_SIZE;
+        size_t block_offset = (offset + bytes_written) % BLOCK_SIZE;
 
-        if (block_idx >= DIRECT_BLOCKS)
-        {
-            fprintf(stderr, "WRITE ERROR: Exceeded direct blocks for file=%s\n", path);
-            return -EFBIG;
+        if (block_idx >= DIRECT_BLOCKS) {
+            fprintf(stderr, "WRITE ERROR: Indirect blocks not implemented for file=%s\n", path);
+            return -EIO;
         }
 
-        if (inode->block_pointers[block_idx] == 0)
-        {
+        char block[BLOCK_SIZE] = {0};
+        if (inode->block_pointers[block_idx] == 0) {
             int block_num = find_free_block();
-            if (block_num == -1)
-            {
-                fprintf(stderr, "WRITE ERROR: No free blocks available for file=%s\n", path);
+            if (block_num == -1) {
+                fprintf(stderr, "WRITE ERROR: No free blocks for file=%s\n", path);
                 return -ENOSPC;
             }
             inode->block_pointers[block_idx] = block_num;
+            fprintf(stderr, "WRITE: Allocated new block %d for file=%s\n", block_num, path);
+        } else {
+            if (read_block(inode->block_pointers[block_idx], block) != 0) {
+                fprintf(stderr, "WRITE ERROR: Failed to read block %zu for file=%s\n", block_idx, path);
+                return -EIO;
+            }
         }
 
-        char block[BLOCK_SIZE];
-        read_block(inode->block_pointers[block_idx], block);
-
         size_t bytes_to_write = BLOCK_SIZE - block_offset;
-        if (bytes_to_write > size - bytes_written)
-        {
+        if (bytes_to_write > size - bytes_written) {
             bytes_to_write = size - bytes_written;
         }
 
         memcpy(block + block_offset, buf + bytes_written, bytes_to_write);
-        write_block(inode->block_pointers[block_idx], block);
+        if (write_block(inode->block_pointers[block_idx], block) != 0) {
+            fprintf(stderr, "WRITE ERROR: Failed to write block %zu for file=%s\n", block_idx, path);
+            return -EIO;
+        }
 
         bytes_written += bytes_to_write;
-        offset += bytes_to_write;
     }
 
-    if (offset > inode->size)
-    {
-        inode->size = offset;
+    // Update size and save metadata
+    if (offset + bytes_written > inode->size) {
+        inode->size = offset + bytes_written;
     }
     inode->modification_time = time(NULL);
-    save_metadata();
 
+    save_metadata();
     fprintf(stderr, "WRITE: Successfully wrote %zu bytes to file=%s\n", bytes_written, path);
     return bytes_written;
 }
+
+
 
 int bfs_release(const char *path, struct fuse_file_info *fi)
 {
