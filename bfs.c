@@ -49,7 +49,7 @@ DirectoryEntry directory[MAX_FILES];  // Array of directory entries
 int find_file(const char *name);
 void initialize_inodes_and_directory();
 int read_block(int block_num, void *buf);
-int write_block(int block_num, void *buf);
+int write_block(int block_num, const void *buf);
 int find_free_block();
 void release_block(int block_num);
 void initialize_filesystem();
