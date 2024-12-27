@@ -69,6 +69,7 @@ int bfs_open(const char *path, struct fuse_file_info *fi);
 int bfs_release(const char *path, struct fuse_file_info *fi);
 int bfs_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi);
 int bfs_access(const char *path, int mask);
+int bfs_rename(const char *oldpath, const char *newpath);
 
 static struct fuse_operations bfs_oper = {
     .getattr = bfs_getattr,
@@ -81,6 +82,7 @@ static struct fuse_operations bfs_oper = {
     .release = bfs_release,
     .utimens = bfs_utimens,
     .access = bfs_access,
+    .rename = bfs_rename,
 };
 
 int find_file(const char *name)
@@ -131,6 +133,33 @@ void initialize_inodes_and_directory()
     }
 
     fprintf(stderr, "INITIALIZE: Metadata loaded successfully.\n");
+}
+
+int bfs_rename(const char *oldpath, const char *newpath)
+{
+    // Find the file with the old path
+    int file_idx = find_file(oldpath + 1); // Remove the leading '/'
+    if (file_idx == -1)
+    {
+        fprintf(stderr, "RENAME ERROR: File not found: %s\n", oldpath);
+        return -ENOENT; // File not found
+    }
+
+    // Check if the new file path already exists
+    if (find_file(newpath + 1) != -1)
+    {
+        fprintf(stderr, "RENAME ERROR: File already exists: %s\n", newpath);
+        return -EEXIST; // File already exists
+    }
+
+    // Rename the file by copying the new path to the directory entry
+    strncpy(directory[file_idx].name, newpath + 1, FILENAME_LEN);
+
+    // Save the updated metadata (directory and inodes)
+    save_metadata();
+
+    fprintf(stderr, "RENAME: File renamed from %s to %s\n", oldpath, newpath);
+    return 0; // Success
 }
 
 /* Bitmap Operations */
