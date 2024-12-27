@@ -54,10 +54,11 @@ int find_free_block();
 void release_block(int block_num);
 void initialize_filesystem();
 void save_metadata();
+int write_partial_block(int block_num, const void *buf, size_t size);
 
 /* FUSE Operations */
 int bfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi);
-int bfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi);
+int bfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags);
 int bfs_create(const char *path, mode_t mode, struct fuse_file_info *fi);
 int bfs_unlink(const char *path);
 int bfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
@@ -140,11 +141,39 @@ int read_block(int block_num, void *buf) {
     return 0;
 }
 
-int write_block(int block_num, void *buf) {
-    if (lseek(fd_disk, block_num * BLOCK_SIZE, SEEK_SET) == -1) return -1;
-    if (write(fd_disk, buf, BLOCK_SIZE) != BLOCK_SIZE) return -1;
+int write_block(int block_num, const void *buf) {
+    if (lseek(fd_disk, block_num * BLOCK_SIZE, SEEK_SET) == -1) {
+        perror("WRITE_BLOCK ERROR: lseek failed");
+        return -1;
+    }
+
+    if (write(fd_disk, buf, BLOCK_SIZE) != BLOCK_SIZE) {
+        perror("WRITE_BLOCK ERROR: write failed");
+        return -1;
+    }
+
     return 0;
 }
+
+int write_partial_block(int block_num, const void *buf, size_t size) {
+    if (size > BLOCK_SIZE) {
+        fprintf(stderr, "WRITE_PARTIAL_BLOCK ERROR: Buffer size exceeds block size\n");
+        return -1;
+    }
+
+    if (lseek(fd_disk, block_num * BLOCK_SIZE, SEEK_SET) == -1) {
+        perror("WRITE_PARTIAL_BLOCK ERROR: lseek failed");
+        return -1;
+    }
+
+    if (write(fd_disk, buf, size) != size) {
+        perror("WRITE_PARTIAL_BLOCK ERROR: write failed");
+        return -1;
+    }
+
+    return 0;
+}
+
 
 /* Initialization */
 void initialize_filesystem() {
@@ -162,7 +191,7 @@ void initialize_filesystem() {
 
 void save_metadata() {
     fprintf(stderr, "SAVE METADATA: Saving bitmap...\n");
-    if (write_block(BITMAP_BLOCK, bitmap) != 0) {
+    if (write_partial_block(BITMAP_BLOCK, bitmap, sizeof(bitmap)) != 0) {
         fprintf(stderr, "SAVE METADATA ERROR: Failed to save bitmap.\n");
     }
 
@@ -172,8 +201,10 @@ void save_metadata() {
     }
 
     fprintf(stderr, "SAVE METADATA: Saving inode table...\n");
-    if (write_block(INODE_TABLE_START, inodes) != 0) {
-        fprintf(stderr, "SAVE METADATA ERROR: Failed to save inode table.\n");
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (write_block(INODE_TABLE_START + i, &inodes[i]) != 0) {
+            fprintf(stderr, "SAVE METADATA ERROR: Failed to save inode %d.\n", i);
+        }
     }
 
     fprintf(stderr, "SAVE METADATA: Metadata saved successfully.\n");
@@ -216,6 +247,33 @@ int bfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
     fprintf(stderr, "GETATTR ERROR: File not found: %s\n", path);
     return -ENOENT;
 }
+
+int bfs_open(const char *path, struct fuse_file_info *fi) {
+    fprintf(stderr, "OPEN: path=%s\n", path);
+
+    if (find_file(path + 1) == -1) {
+        fprintf(stderr, "OPEN ERROR: File not found: %s\n", path);
+        return -ENOENT;
+    }
+
+    fprintf(stderr, "OPEN: File=%s opened successfully\n", path);
+    return 0; // Success
+}
+
+int bfs_access(const char *path, int mask) {
+    fprintf(stderr, "ACCESS: path=%s, mask=%d\n", path, mask);
+
+    int file_idx = find_file(path + 1);
+    if (file_idx == -1) {
+        fprintf(stderr, "ACCESS ERROR: File not found: %s\n", path);
+        return -ENOENT;
+    }
+
+    // Simplified access check
+    fprintf(stderr, "ACCESS: File=%s is accessible\n", path);
+    return 0; // Success
+}
+
 
 int bfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
     fprintf(stderr, "READDIR: path=%s\n", path);
