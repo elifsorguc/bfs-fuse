@@ -75,6 +75,7 @@ int bfs_open(const char *path, struct fuse_file_info *fi);
 int bfs_release(const char *path, struct fuse_file_info *fi);
 int bfs_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi);
 int bfs_access(const char *path, int mask);
+int bfs_rename(const char *from, const char *to, unsigned int flags);
 
 static struct fuse_operations bfs_oper = {
     .getattr = bfs_getattr,
@@ -87,6 +88,7 @@ static struct fuse_operations bfs_oper = {
     .release = bfs_release,
     .utimens = bfs_utimens,
     .access = bfs_access,
+    .rename = bfs_rename,
 };
 
 /* Helper Functions */
@@ -554,6 +556,72 @@ int bfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 
     fprintf(stderr, "CREATE: File=%s created successfully with inode=%d\n", path, inode_num);
     return 0;
+}
+
+/**
+ * Renames or moves a file from 'from' to 'to'.
+ */
+int bfs_rename(const char *from, const char *to, unsigned int flags)
+{
+    fprintf(stderr, "RENAME: from=%s, to=%s, flags=%u\n", from, to, flags);
+
+    // Ensure that 'from' and 'to' are not root
+    if (strcmp(from, "/") == 0 || strcmp(to, "/") == 0)
+    {
+        fprintf(stderr, "RENAME ERROR: Cannot rename root directory.\n");
+        return -EINVAL;
+    }
+
+    // Extract file names by removing the leading '/'
+    const char *from_name = from[0] == '/' ? from + 1 : from;
+    const char *to_name = to[0] == '/' ? to + 1 : to;
+
+    // Find the source file
+    int from_idx = find_file(from_name);
+    if (from_idx == -1)
+    {
+        fprintf(stderr, "RENAME ERROR: Source file '%s' not found.\n", from_name);
+        return -ENOENT;
+    }
+
+    // Check if the destination file already exists
+    int to_idx = find_file(to_name);
+    if (to_idx != -1)
+    {
+        fprintf(stderr, "RENAME ERROR: Destination file '%s' already exists.\n", to_name);
+        return -EEXIST;
+    }
+
+    // Find a free directory entry for the destination
+    int free_dir_idx = -1;
+    for (int i = 0; i < MAX_FILES; i++)
+    {
+        if (directory[i].inode_num == 0)
+        {
+            free_dir_idx = i;
+            break;
+        }
+    }
+
+    if (free_dir_idx == -1)
+    {
+        fprintf(stderr, "RENAME ERROR: No free directory entries available.\n");
+        return -ENOSPC;
+    }
+
+    // Perform the rename by copying the directory entry to the new name
+    directory[free_dir_idx].inode_num = directory[from_idx].inode_num;
+    strncpy(directory[free_dir_idx].name, to_name, FILENAME_LEN - 1);
+    directory[free_dir_idx].name[FILENAME_LEN - 1] = '\0'; // Ensure NULL-termination
+
+    // Remove the old directory entry
+    memset(&directory[from_idx], 0, sizeof(DirectoryEntry));
+
+    // Save metadata to persist changes
+    save_metadata();
+
+    fprintf(stderr, "RENAME: Successfully renamed '%s' to '%s'\n", from_name, to_name);
+    return 0; // Success
 }
 
 /**
