@@ -301,7 +301,7 @@ int find_free_block()
             return i;
         }
     }
-    return -1; // No free block found
+    return -1; 
 }
 
 /**
@@ -333,19 +333,16 @@ void initialize_filesystem()
  */
 void save_metadata()
 {
-    fprintf(stderr, "SAVE METADATA: Saving bitmap...\n");
     if (write_block(BITMAP_BLOCK_START, bitmap) != 0)
     {
         fprintf(stderr, "SAVE METADATA ERROR: Failed to save bitmap.\n");
     }
 
-    fprintf(stderr, "SAVE METADATA: Saving inode map...\n");
     if (write_partial_block(INODE_MAP_BLOCK, inode_map, sizeof(inode_map)) != 0)
     {
         fprintf(stderr, "SAVE METADATA ERROR: Failed to save inode map.\n");
     }
 
-    fprintf(stderr, "SAVE METADATA: Saving inode table...\n");
     for (int block = 0; block < INODE_TABLE_BLOCKS; block++)
     {
         char block_buf[BLOCK_SIZE];
@@ -429,7 +426,6 @@ int bfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
         }
     }
 
-    //fprintf(stderr, "GETATTR ERROR: File not found: %s\n", path);
     return -ENOENT;
 }
 
@@ -470,8 +466,6 @@ int bfs_access(const char *path, int mask)
         return -ENOENT;
     }
 
-    // Simplified access check: always allow
-   // fprintf(stderr, "ACCESS: File=%s is accessible\n", path);
     return 0; // Success
 }
 
@@ -494,21 +488,17 @@ int bfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offse
         return -ENOENT;
     }
 
-    // Add current directory and parent directory entries
     filler(buf, ".", NULL, 0, 0);
     filler(buf, "..", NULL, 0, 0);
 
-    // Add entries for files in the root directory
     for (int i = 0; i < MAX_FILES; i++)
     {
         if (directory[i].inode_num > 0)
         {
-            //fprintf(stderr, "READDIR: Found entry=%s\n", directory[i].name);
             filler(buf, directory[i].name, NULL, 0, 0);
         }
     }
 
-    //fprintf(stderr, "READDIR: Completed listing directory contents\n");
     double elapsed_time = end_timer(&timer);
     fprintf(stderr, "READ: Time taken for readdir: %.2f ms\n", elapsed_time);
 
@@ -570,10 +560,8 @@ int bfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     directory[dir_idx].name[FILENAME_LEN - 1] = '\0'; // Ensure NULL-termination
     directory[dir_idx].inode_num = inode_num;
 
-    // Save metadata
     save_metadata();
 
-    //fprintf(stderr, "CREATE: File=%s created successfully with inode=%d\n", path, inode_num);
     double elapsed_time = end_timer(&timer);
     fprintf(stderr, "READ: Time taken for creating: %.2f ms\n", elapsed_time);
 
@@ -587,18 +575,15 @@ int bfs_rename(const char *from, const char *to, unsigned int flags)
 {
     fprintf(stderr, "RENAME: from=%s, to=%s, flags=%u\n", from, to, flags);
 
-    // Ensure that 'from' and 'to' are not root
     if (strcmp(from, "/") == 0 || strcmp(to, "/") == 0)
     {
         fprintf(stderr, "RENAME ERROR: Cannot rename root directory.\n");
         return -EINVAL;
     }
 
-    // Extract file names by removing the leading '/'
     const char *from_name = from[0] == '/' ? from + 1 : from;
     const char *to_name = to[0] == '/' ? to + 1 : to;
 
-    // Find the source file
     int from_idx = find_file(from_name);
     if (from_idx == -1)
     {
@@ -653,7 +638,6 @@ int bfs_unlink(const char *path)
 {
     struct timespec timer;
     start_timer(&timer);
-    //fprintf(stderr, "UNLINK: Attempting to delete file at path=%s\n", path);
 
     for (int i = 0; i < MAX_FILES; i++)
     {
@@ -669,14 +653,12 @@ int bfs_unlink(const char *path)
             }
 
             Inode *inode = &inodes[inode_idx];
-            //fprintf(stderr, "UNLINK: Found file=%s, inode_num=%d\n", directory[i].name, inode_num);
 
             // Release direct blocks
             for (int j = 0; j < DIRECT_BLOCKS; j++)
             {
                 if (inode->block_pointers[j] != 0)
                 {
-                    fprintf(stderr, "UNLINK: Releasing block=%d\n", inode->block_pointers[j]);
                     release_block(inode->block_pointers[j]);
                     inode->block_pointers[j] = 0;
                 }
@@ -697,7 +679,6 @@ int bfs_unlink(const char *path)
                 {
                     if (indirect_pointers[j] != 0)
                     {
-                        fprintf(stderr, "UNLINK: Releasing indirect block=%d\n", indirect_pointers[j]);
                         release_block(indirect_pointers[j]);
                         indirect_pointers[j] = 0;
                     }
@@ -720,7 +701,6 @@ int bfs_unlink(const char *path)
             fprintf(stderr, "UNLINK: Clearing directory entry for file=%s\n", directory[i].name);
             memset(&directory[i], 0, sizeof(DirectoryEntry));
 
-            fprintf(stderr, "UNLINK: Clearing inode=%d\n", inode_num);
             memset(inode, 0, sizeof(Inode));
             release_inode(inode_num);
 
@@ -1008,7 +988,6 @@ int bfs_write(const char *path, const char *buf, size_t size, off_t offset, stru
     // Save metadata
     save_metadata();
 
-    fprintf(stderr, "WRITE: Successfully wrote %zu bytes to file=%s\n", bytes_written, path);
     double elapsed_time = end_timer(&timer);
     fprintf(stderr, "WRITE: Time taken for writing %zu bytes: %.2f ms\n", size, elapsed_time);
 
