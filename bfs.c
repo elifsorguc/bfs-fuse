@@ -53,6 +53,8 @@ Inode inodes[MAX_FILES];                          // Array of inodes
 DirectoryEntry directory[MAX_FILES];              // Array of directory entries
 
 /* Helper Function Prototypes */
+void start_timer(struct timespec *start);
+double end_timer(struct timespec *start);
 int find_file(const char *name);
 int find_free_inode();
 void initialize_inodes_and_directory();
@@ -92,6 +94,16 @@ static struct fuse_operations bfs_oper = {
 };
 
 /* Helper Functions */
+
+void start_timer(struct timespec *start) {
+    clock_gettime(CLOCK_MONOTONIC, start);
+}
+
+double end_timer(struct timespec *start) {
+    struct timespec end;
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    return (end.tv_sec - start->tv_sec) * 1e3 + (end.tv_nsec - start->tv_nsec) / 1e6; // Return time in milliseconds
+}
 
 /**
  * Finds the index of a file in the directory based on its name.
@@ -417,7 +429,7 @@ int bfs_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
         }
     }
 
-    fprintf(stderr, "GETATTR ERROR: File not found: %s\n", path);
+    //fprintf(stderr, "GETATTR ERROR: File not found: %s\n", path);
     return -ENOENT;
 }
 
@@ -459,7 +471,7 @@ int bfs_access(const char *path, int mask)
     }
 
     // Simplified access check: always allow
-    fprintf(stderr, "ACCESS: File=%s is accessible\n", path);
+   // fprintf(stderr, "ACCESS: File=%s is accessible\n", path);
     return 0; // Success
 }
 
@@ -468,6 +480,8 @@ int bfs_access(const char *path, int mask)
  */
 int bfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags)
 {
+    struct timespec timer;
+    start_timer(&timer);
     (void)offset;
     (void)fi;
     (void)flags;
@@ -489,12 +503,15 @@ int bfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offse
     {
         if (directory[i].inode_num > 0)
         {
-            fprintf(stderr, "READDIR: Found entry=%s\n", directory[i].name);
+            //fprintf(stderr, "READDIR: Found entry=%s\n", directory[i].name);
             filler(buf, directory[i].name, NULL, 0, 0);
         }
     }
 
-    fprintf(stderr, "READDIR: Completed listing directory contents\n");
+    //fprintf(stderr, "READDIR: Completed listing directory contents\n");
+    double elapsed_time = end_timer(&timer);
+    fprintf(stderr, "READ: Time taken for readdir: %.2f ms\n", elapsed_time);
+
     return 0;
 }
 
@@ -503,6 +520,8 @@ int bfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offse
  */
 int bfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
+    struct timespec timer;
+    start_timer(&timer);
     (void)fi;
     fprintf(stderr, "CREATE: path=%s, mode=%o\n", path, mode);
 
@@ -554,7 +573,10 @@ int bfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     // Save metadata
     save_metadata();
 
-    fprintf(stderr, "CREATE: File=%s created successfully with inode=%d\n", path, inode_num);
+    //fprintf(stderr, "CREATE: File=%s created successfully with inode=%d\n", path, inode_num);
+    double elapsed_time = end_timer(&timer);
+    fprintf(stderr, "READ: Time taken for creating: %.2f ms\n", elapsed_time);
+
     return 0;
 }
 
@@ -629,7 +651,9 @@ int bfs_rename(const char *from, const char *to, unsigned int flags)
  */
 int bfs_unlink(const char *path)
 {
-    fprintf(stderr, "UNLINK: Attempting to delete file at path=%s\n", path);
+    struct timespec timer;
+    start_timer(&timer);
+    //fprintf(stderr, "UNLINK: Attempting to delete file at path=%s\n", path);
 
     for (int i = 0; i < MAX_FILES; i++)
     {
@@ -645,7 +669,7 @@ int bfs_unlink(const char *path)
             }
 
             Inode *inode = &inodes[inode_idx];
-            fprintf(stderr, "UNLINK: Found file=%s, inode_num=%d\n", directory[i].name, inode_num);
+            //fprintf(stderr, "UNLINK: Found file=%s, inode_num=%d\n", directory[i].name, inode_num);
 
             // Release direct blocks
             for (int j = 0; j < DIRECT_BLOCKS; j++)
@@ -703,11 +727,15 @@ int bfs_unlink(const char *path)
             // Save metadata
             save_metadata();
             fprintf(stderr, "UNLINK: File=%s successfully unlinked\n", path);
+            double elapsed_time = end_timer(&timer);
+            fprintf(stderr, "READ: Time taken for unlinking : %.2f ms\n", elapsed_time);
+
             return 0;
         }
     }
 
     fprintf(stderr, "UNLINK ERROR: File not found at path=%s\n", path);
+    
     return -ENOENT;
 }
 
@@ -716,6 +744,8 @@ int bfs_unlink(const char *path)
  */
 int bfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
+    struct timespec timer;
+    start_timer(&timer);
     (void)fi;
     fprintf(stderr, "READ: path=%s, size=%zu, offset=%ld\n", path, size, offset);
 
@@ -809,6 +839,9 @@ int bfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse
     }
 
     fprintf(stderr, "READ: Successfully read %zu bytes from file=%s\n", bytes_read, path);
+    double elapsed_time = end_timer(&timer);
+    fprintf(stderr, "READ: Time taken for reading %zu bytes: %.2f ms\n", size, elapsed_time);
+
     return bytes_read;
 }
 
@@ -817,6 +850,8 @@ int bfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse
  */
 int bfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi)
 {
+    struct timespec timer;
+    start_timer(&timer);
     (void)fi;
     fprintf(stderr, "WRITE: path=%s, size=%zu, offset=%ld\n", path, size, offset);
 
@@ -974,6 +1009,9 @@ int bfs_write(const char *path, const char *buf, size_t size, off_t offset, stru
     save_metadata();
 
     fprintf(stderr, "WRITE: Successfully wrote %zu bytes to file=%s\n", bytes_written, path);
+    double elapsed_time = end_timer(&timer);
+    fprintf(stderr, "WRITE: Time taken for writing %zu bytes: %.2f ms\n", size, elapsed_time);
+
     return bytes_written;
 }
 
